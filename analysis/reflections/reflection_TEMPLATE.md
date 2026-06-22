@@ -1,6 +1,6 @@
 # Individual Reflection — Lab 18
 
-**Tên:** Đỗ Thị Thanh Bình  
+**Tên:** Đỗ Thị Thanh Bình - 2A202600717
 **Module phụ trách:** M1, M2, M3, M4, M5 (solo)
 
 ---

@@ -1,7 +1,7 @@
 # Failure Analysis — Lab 18: Production RAG
 
 **Nhóm:** DoThiThanhBinh  
-**Thành viên:** Đỗ Thị Thanh Bình (M1→M5, solo)
+**Thành viên:** Đỗ Thị Thanh Bình - 2A202600717 (M1→M5, solo)
 
 ---
 
