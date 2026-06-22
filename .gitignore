@@ -1,8 +1,30 @@
+# Secrets
 .env
-.DS_Store
+
+# Python
 __pycache__/
 *.pyc
-.pytest_cache/
-qdrant_data/
+*.pyo
+.venv/
+venv/
 *.egg-info/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Qdrant local storage
+qdrant_data/
+
+# Reports (auto-generated — grader regenerates)
 reports/*.json
+
+# Pipeline cache & logs
+reports/answers_cache.json
+*.log
+tmp/
+
+# Model cache (large, downloaded on demand)
+.cache/
+models/

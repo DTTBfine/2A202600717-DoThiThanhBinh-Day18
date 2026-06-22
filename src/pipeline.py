@@ -11,7 +11,7 @@ from src.m2_search import HybridSearch
 from src.m3_rerank import CrossEncoderReranker
 from src.m4_eval import load_test_set, evaluate_ragas, failure_analysis, save_report
 from src.m5_enrichment import enrich_chunks
-from config import RERANK_TOP_K
+from config import RERANK_TOP_K, DENSE_TOP_K
 
 
 def build_pipeline():
@@ -27,8 +27,18 @@ def build_pipeline():
     all_chunks = []
     for doc in docs:
         parents, children = chunk_hierarchical(doc["text"], metadata=doc["metadata"])
+        # parent-child retrieval: index small children (precision), return full parent for context (recall)
+        parent_map = {p.metadata["parent_id"]: p.text for p in parents}
         for child in children:
-            all_chunks.append({"text": child.text, "metadata": {**child.metadata, "parent_id": child.parent_id}})
+            pid = child.parent_id
+            all_chunks.append({
+                "text": child.text,
+                "metadata": {
+                    **child.metadata,
+                    "parent_id": pid,
+                    "_parent_text": parent_map.get(pid, child.text),
+                },
+            })
     print(f"  ✓ {len(all_chunks)} chunks from {len(docs)} documents ({time.time()-t0:.1f}s)", flush=True)
 
     # Step 2: Enrichment (M5)
@@ -36,7 +46,20 @@ def build_pipeline():
     print(f"\n[2/4] Enriching {len(all_chunks)} chunks (M5, 1 API call/chunk)...", flush=True)
     enriched = enrich_chunks(all_chunks)
     if enriched:
-        all_chunks = [{"text": e.enriched_text, "metadata": e.auto_metadata} for e in enriched]
+        # HyQA: index "questions + original text" for better semantic matching
+        # _parent_text preserved from auto_metadata (enrichment copies original metadata)
+        all_chunks = []
+        for e in enriched:
+            hyqa_prefix = "\n".join(e.hypothesis_questions) if e.hypothesis_questions else ""
+            index_text = f"{hyqa_prefix}\n\n{e.original_text}" if hyqa_prefix else e.original_text
+            all_chunks.append({
+                "text": index_text,
+                "metadata": {
+                    **e.auto_metadata,
+                    "_original_text": e.original_text,
+                    # _parent_text is already in e.auto_metadata (copied from original chunk metadata)
+                },
+            })
         print(f"  ✓ Enriched {len(enriched)} chunks ({time.time()-t0:.1f}s)", flush=True)
     else:
         print("  ⚠️  M5 not implemented — using raw chunks", flush=True)
@@ -59,10 +82,15 @@ def build_pipeline():
 
 def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) -> tuple[str, list[str]]:
     """Run single query through pipeline."""
-    results = search.search(query)
+    # Dense-only retrieval: higher semantic precision than hybrid (no BM25 keyword noise)
+    # HyQA indexing already improves dense recall; CrossEncoder reranker handles final ranking
+    results = search.dense.search(query, top_k=DENSE_TOP_K)
     docs = [{"text": r.text, "score": r.score, "metadata": r.metadata} for r in results]
     reranked = reranker.rerank(query, docs, top_k=RERANK_TOP_K)
-    contexts = [r.text for r in reranked] if reranked else [r.text for r in results[:3]]
+    # Return clean original child text (no HyQA prefix noise)
+    def _clean(r):
+        return r.metadata.get("_original_text", r.text)
+    contexts = [_clean(r) for r in reranked] if reranked else [_clean(r) for r in results[:RERANK_TOP_K]]
 
     from config import OPENAI_API_KEY
     if OPENAI_API_KEY and contexts:
@@ -70,8 +98,13 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
             from openai import OpenAI
             client = OpenAI()
             context_str = "\n\n".join(contexts)
-            resp = client.chat.completions.create(model="gpt-4o-mini", messages=[
-                {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
+            resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.0, messages=[
+                {"role": "system", "content": (
+                    "Bạn là trợ lý HR. Trả lời DỰA TRÊN context được cung cấp.\n"
+                    "- Ưu tiên thông tin trong context. Không thêm thông tin không có trong context.\n"
+                    "- Nếu context không có đủ thông tin → nói 'Không tìm thấy thông tin cụ thể trong tài liệu.'\n"
+                    "- Trả lời ngắn gọn, trực tiếp vào câu hỏi."
+                )},
                 {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
             ])
             answer = resp.choices[0].message.content
@@ -85,6 +118,7 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
 
 def evaluate_pipeline(search: HybridSearch, reranker: CrossEncoderReranker):
     """Run evaluation on test set."""
+    import json, pathlib
     test_set = load_test_set()
     print(f"\n[Eval] Running {len(test_set)} queries...", flush=True)
     questions, answers, all_contexts, ground_truths = [], [], [], []
@@ -96,6 +130,14 @@ def evaluate_pipeline(search: HybridSearch, reranker: CrossEncoderReranker):
         all_contexts.append(contexts)
         ground_truths.append(item["ground_truth"])
         print(f"  [{i+1}/{len(test_set)}] {item['question'][:50]}...", flush=True)
+
+    # Cache answers so RAGAS can be retried without re-running pipeline
+    cache = {"questions": questions, "answers": answers,
+             "contexts": all_contexts, "ground_truths": ground_truths}
+    pathlib.Path("reports").mkdir(exist_ok=True)
+    with open("reports/answers_cache.json", "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+    print("  ✓ Answers cached to reports/answers_cache.json", flush=True)
 
     t0 = time.time()
     print(f"\n[Eval] Running RAGAS (4 metrics × {len(test_set)} questions)...", flush=True)
@@ -110,7 +152,7 @@ def evaluate_pipeline(search: HybridSearch, reranker: CrossEncoderReranker):
         print(f"  {'✓' if s >= 0.75 else '✗'} {m}: {s:.4f}")
 
     failures = failure_analysis(results.get("per_question", []))
-    save_report(results, failures)
+    save_report(results, failures, path="reports/ragas_report.json")
     return results
 
 

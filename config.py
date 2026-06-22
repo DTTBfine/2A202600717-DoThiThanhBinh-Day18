@@ -20,14 +20,14 @@ EMBEDDING_DIM = 1024
 
 # --- Chunking ---
 HIERARCHICAL_PARENT_SIZE = 2048
-HIERARCHICAL_CHILD_SIZE = 256
+HIERARCHICAL_CHILD_SIZE = 400
 SEMANTIC_THRESHOLD = 0.85
 
 # --- Search ---
 BM25_TOP_K = 20
 DENSE_TOP_K = 20
 HYBRID_TOP_K = 20
-RERANK_TOP_K = 3
+RERANK_TOP_K = 5
 
 # --- Paths ---
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
